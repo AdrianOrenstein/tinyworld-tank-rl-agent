@@ -135,7 +135,7 @@ class PPO:
 			surr1 = ratios * advantages
 			surr2 = torch.clamp(ratios, 1-self.eps_clip, 1+self.eps_clip) * advantages
 			loss = -torch.min(surr1, surr2) + 0.5*self.MseLoss(state_values, rewards) - 0.01*dist_entropy
-			
+			print("loss:", loss)
 			# take gradient step
 			self.optimizer.zero_grad()
 			loss.mean().backward()
@@ -150,10 +150,10 @@ def main():
 	solved_reward = 300         # stop training if avg_reward > solved_reward
 	log_interval = 20           # print avg reward in the interval
 	max_episodes = 10000        # max training episodes
-	max_timesteps = int(50 * (1/tick_time))        # max actions in one episode
+	max_timesteps = int(1000 * (1/tick_time))        # max actions in one episode
 	
 	
-	update_timestep = max_timesteps * 1      # update policy every n timesteps
+	update_timestep = int(500 * (1/tick_time))      # update policy every n timesteps
 	action_std = 0.5            # constant std for action distribution (Multivariate Normal)
 	K_epochs = 80               # update policy for K epochs
 	eps_clip = 0.2              # clip parameter for PPO
@@ -200,7 +200,7 @@ def main():
 		parse observation dict into desirable data structures
 		"""
 		if not observations:
-			print("no observations.. there is no one around me?")
+			# print("no observations.. there is no one around me?")
 			observations = {
 				'deathCount': kill_count, 
 				'killCount': death_count, 
@@ -218,7 +218,7 @@ def main():
 		if len(tank_locations) > 0:
 			ret_state[:min(len(tank_locations), state_dim)] = tank_locations[:state_dim]
 
-		print("I can see:", len(tank_locations), "tanks")
+		# print("I can see:", len(tank_locations), "tanks")
 		# count of the kills
 		ret_reward = observations['killCount']
 		
@@ -253,7 +253,7 @@ def main():
 					2    * reward_kills,
 					0.01 * reward_distance
 				])
-				print("reward:", reward)
+				# print("reward:", reward)
 				kill_count += reward_kills
 
 				# print(
@@ -272,7 +272,7 @@ def main():
 					"moveForwardBack": action[0],
 					"moveRightLeft": action[1],
 					"turnRightLeft": action[2],
-					"fire": True,#action[3] > 0,
+					"fire": action[3] > 0,
 				}
 
 				env.send_action_dict(action_dict)
@@ -285,7 +285,7 @@ def main():
 
 				# update if its time
 				# print(time_step, update_timestep)
-				print("I have:", len(memory.states), "memory")
+				# print("I have:", len(memory.states), "memory")
 				if time_step % update_timestep == 0:
 					ppo.update(memory)
 					memory.clear_memory()
@@ -308,7 +308,7 @@ def main():
 			
 		# save every 500 episodes
 		if i_episode % 500 == 0:
-			torch.save(ppo.policy.state_dict(), './PPO_continuous_{}.pth'.format("test"))
+			torch.save(ppo.policy.state_dict(), './PPO_continuous_{}.pth'.format(id))
 			
 		# logging
 		# if i_episode % log_interval == 0:
