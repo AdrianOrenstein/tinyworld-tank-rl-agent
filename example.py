@@ -146,14 +146,14 @@ class PPO:
 		
 def main():
 	############## Hyperparameters ##############
-	tick_time = 0.25
+	tick_time = 0.1
 	solved_reward = 300         # stop training if avg_reward > solved_reward
 	log_interval = 20           # print avg reward in the interval
 	max_episodes = 10000        # max training episodes
-	max_timesteps = int(10 * (1/tick_time))        # max actions in one episode
+	max_timesteps = int(50 * (1/tick_time))        # max actions in one episode
 	
 	
-	update_timestep = 4000      # update policy every n timesteps
+	update_timestep = max_timesteps * 1      # update policy every n timesteps
 	action_std = 0.5            # constant std for action distribution (Multivariate Normal)
 	K_epochs = 80               # update policy for K epochs
 	eps_clip = 0.2              # clip parameter for PPO
@@ -189,35 +189,36 @@ def main():
 	avg_length = 0
 	time_step = 0
 
+	def get_dist(x: float, y: float) -> float:
+		return math.sqrt(math.pow(x, 2) + math.pow(y, 2))
+
+	def parse_distances(arr: tuple):
+		return get_dist(arr[0], arr[1])
+
 	def parse_observations(observations: dict, kill_count: int, death_count: int) -> (list, int, bool):
 		""" 
 		parse observation dict into desirable data structures
 		"""
 		if not observations:
+			print("no observations.. there is no one around me?")
 			observations = {
-				'deathCount': 0, 
-				'killCount': 1, 
-				'radarScan': [
-					{'y': 9.616792678833008, 'x': 1.9451807737350464}, 
-					{'y': 7.234492301940918, 'x': -3.2640678882598877}, 
-					{'y': -5.374014377593994, 'x': -0.9157331585884094}, 
-					{'y': -0.6222546696662903, 'x': -8.989055633544922}, 
-					{'y': 9.77155590057373, 'x': -1.3284714221954346}, 
-					{'y': 2.270501136779785, 'x': -6.926970481872559}
-				]
+				'deathCount': kill_count, 
+				'killCount': death_count, 
+				'radarScan': []
 			}
-		def get_dist(x: float, y: float) -> float:
-			return math.sqrt(math.pow(x, 2) + math.pow(y, 2))
+		
 
 		# grab the 15 closest tanks
 		tank_locations = [ (float(tank_dic['x']), float(tank_dic['y']) ) for tank_dic in observations['radarScan']]
-		tank_locations = sorted(tank_locations, key= lambda arr: get_dist(arr[0], arr[1]))
+		tank_locations = sorted(tank_locations, key=parse_distances)
 
 		# List of the closest tank coordinates
 		ret_state = np.zeros((state_dim//2,2))
 
-		ret_state[:min(len(tank_locations), state_dim)] = tank_locations[:state_dim]
+		if len(tank_locations) > 0:
+			ret_state[:min(len(tank_locations), state_dim)] = tank_locations[:state_dim]
 
+		print("I can see:", len(tank_locations), "tanks")
 		# count of the kills
 		ret_reward = observations['killCount']
 		
@@ -244,8 +245,16 @@ def main():
 
 
 				# calculate rewards
-				reward = current_kills - kill_count
-				kill_count += reward
+				reward_kills = current_kills - kill_count
+				tmp_distances = (parse_distances(tank_loc) for tank_loc in state)
+				reward_distance = sum((10-dist if dist > 0 else 0 for dist in tmp_distances))
+
+				reward = sum([
+					2    * reward_kills,
+					0.01 * reward_distance
+				])
+				print("reward:", reward)
+				kill_count += reward_kills
 
 				# print(
 				# 	"action:", action, "\n",
@@ -256,11 +265,9 @@ def main():
 				# 	"kill_count:", kill_count, "\n"
 				# 	)
 
-				print(action)
-
 				# Apply action to dict
 				action_dict = {
-					"name": "Adrian_PPO_" + str(id),
+					"name": f"Adrian_PPO_ep:{i_episode}_id:{id}",
 					"colour": "#7017a1",
 					"moveForwardBack": action[0],
 					"moveRightLeft": action[1],
@@ -277,6 +284,8 @@ def main():
 				running_reward += reward
 
 				# update if its time
+				# print(time_step, update_timestep)
+				print("I have:", len(memory.states), "memory")
 				if time_step % update_timestep == 0:
 					ppo.update(memory)
 					memory.clear_memory()
@@ -299,16 +308,16 @@ def main():
 			
 		# save every 500 episodes
 		if i_episode % 500 == 0:
-			torch.save(ppo.policy.state_dict(), './PPO_continuous_{}.pth'.format(env_name))
+			torch.save(ppo.policy.state_dict(), './PPO_continuous_{}.pth'.format("test"))
 			
 		# logging
-		if i_episode % log_interval == 0:
-			avg_length = int(avg_length/log_interval)
-			running_reward = int((running_reward/log_interval))
-			
-			print('Episode {} \t Avg length: {} \t Avg reward: {}'.format(i_episode, avg_length, running_reward))
-			running_reward = 0
-			avg_length = 0
+		# if i_episode % log_interval == 0:
+		avg_length = int(avg_length/log_interval)
+		running_reward = int((running_reward/log_interval))
+		
+		print('Episode {} \t Avg length: {} \t Avg reward: {}'.format(i_episode, avg_length, running_reward))
+		running_reward = 0
+		avg_length = 0
 			
 if __name__ == '__main__':
 	main()
