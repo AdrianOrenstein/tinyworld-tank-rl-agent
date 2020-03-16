@@ -7,13 +7,18 @@ from rlworldclient import RlWorldClient
 import time
 import random
 import math
+import pickle
 
-id = random.randint(0,100)
+from tqdm.auto import tqdm
 
-device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+from torch.utils.tensorboard import SummaryWriter
 
-print("CUDA?", torch.cuda.is_available())
-# device = torch.device("cpu")
+id = random.randint(0,1000)
+
+# device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+
+# print("CUDA?", torch.cuda.is_available())
+device = torch.device("cpu")
 
 class Memory:
 	def __init__(self):
@@ -24,6 +29,18 @@ class Memory:
 		self.is_terminals = []
 	
 	def clear_memory(self):
+		size = len(self.states)
+
+		time_id = math.floor(time.time())
+		# store what we're deleting
+		with open(f"./data/{time_id}__{size}.pkl", 'wb') as f:
+			pickle.dump({
+				"actions": self.actions[:],
+				"states": self.states[:],
+				"logprobs": self.logprobs[:],
+				"rewards": self.rewards[:],
+				"is_terminals": self.is_terminals[:],
+				}, f)
 		del self.actions[:]
 		del self.states[:]
 		del self.logprobs[:]
@@ -105,6 +122,7 @@ class PPO:
 	
 	def update(self, memory):
 		# Monte Carlo estimate of rewards:
+		print("Updating networks...")
 		rewards = []
 		discounted_reward = 0
 		for reward, is_terminal in zip(reversed(memory.rewards), reversed(memory.is_terminals)):
@@ -121,6 +139,8 @@ class PPO:
 		old_states = torch.squeeze(torch.stack(memory.states).to(device), 1).detach()
 		old_actions = torch.squeeze(torch.stack(memory.actions).to(device), 1).detach()
 		old_logprobs = torch.squeeze(torch.stack(memory.logprobs), 1).to(device).detach()
+
+		# tmp_loss = 0
 		
 		# Optimize policy for K epochs:
 		for _ in range(self.K_epochs):
@@ -135,25 +155,29 @@ class PPO:
 			surr1 = ratios * advantages
 			surr2 = torch.clamp(ratios, 1-self.eps_clip, 1+self.eps_clip) * advantages
 			loss = -torch.min(surr1, surr2) + 0.5*self.MseLoss(state_values, rewards) - 0.01*dist_entropy
-			print("loss:", loss)
+			
 			# take gradient step
 			self.optimizer.zero_grad()
+			#tmp_loss += loss
 			loss.mean().backward()
 			self.optimizer.step()
 			
 		# Copy new weights into old policy:
+		# print("updating policy, loss:", loss/self.K_epochs)
 		self.policy_old.load_state_dict(self.policy.state_dict())
 		
 def main():
 	############## Hyperparameters ##############
+	env_name = f"{math.floor(time.time())}__id_{id}"
+	writer = SummaryWriter("./logs/"+env_name)
 	tick_time = 0.1
 	solved_reward = 300         # stop training if avg_reward > solved_reward
 	log_interval = 20           # print avg reward in the interval
-	max_episodes = 10000        # max training episodes
-	max_timesteps = int(1000 * (1/tick_time))        # max actions in one episode
+	max_episodes = 1000000        # max training episodes
+	max_timesteps = int(15 * (1/tick_time))        # max actions in one episode
 	
 	
-	update_timestep = int(500 * (1/tick_time))      # update policy every n timesteps
+	update_timestep = max_timesteps * 2 # update policy every n timesteps
 	action_std = 0.5            # constant std for action distribution (Multivariate Normal)
 	K_epochs = 80               # update policy for K epochs
 	eps_clip = 0.2              # clip parameter for PPO
@@ -170,8 +194,10 @@ def main():
 	action_dim = 4
 
 	print(
-		"state_dim:", state_dim, "\n"
-		"action_dim:", action_dim, "\n"
+		"state_dim:", state_dim, "\n",
+		"action_dim:", action_dim, "\n",
+		"max_timesteps:", max_timesteps, "\n",
+		"update_timestep:", update_timestep, "\n",
 	)
 	
 	if random_seed:
@@ -228,7 +254,7 @@ def main():
 		return ret_state, ret_reward, ret_done
 
 	# training loop
-	for i_episode in range(1, max_episodes+1):
+	for i_episode in tqdm(range(1, max_episodes+1)):
 		try:
 			env = RlWorldClient("129.127.147.237",1337)
 			state = env.read_observation_dict()
@@ -245,12 +271,13 @@ def main():
 
 
 				# calculate rewards
+				mm_clip = lambda x, l, u: max(l, min(u, x))
 				reward_kills = current_kills - kill_count
 				tmp_distances = (parse_distances(tank_loc) for tank_loc in state)
-				reward_distance = sum((10-dist if dist > 0 else 0 for dist in tmp_distances))
+				reward_distance = sum((mm_clip(1/dist, 1, 10) if dist>0 else 0 for dist in tmp_distances))
 
 				reward = sum([
-					2    * reward_kills,
+					10    * reward_kills,
 					0.01 * reward_distance
 				])
 				# print("reward:", reward)
@@ -269,10 +296,10 @@ def main():
 				action_dict = {
 					"name": f"Adrian_PPO_ep:{i_episode}_id:{id}",
 					"colour": "#7017a1",
-					"moveForwardBack": action[0],
-					"moveRightLeft": action[1],
-					"turnRightLeft": action[2],
-					"fire": action[3] > 0,
+					"moveForwardBack": mm_clip(action[0], -1, 1),
+					"moveRightLeft": mm_clip(action[1], -1, 1),
+					"turnRightLeft": mm_clip(action[2], -1, 1),
+					"fire": True, # action[3] > 0,
 				}
 
 				env.send_action_dict(action_dict)
@@ -282,14 +309,6 @@ def main():
 				memory.is_terminals.append(done)
 
 				running_reward += reward
-
-				# update if its time
-				# print(time_step, update_timestep)
-				# print("I have:", len(memory.states), "memory")
-				if time_step % update_timestep == 0:
-					ppo.update(memory)
-					memory.clear_memory()
-					time_step = 0
 
 				if done:
 					break
@@ -304,20 +323,22 @@ def main():
 			print(e)
 			time.sleep(1)
 
-		
+		if i_episode % 25 == 0:
+			ppo.update(memory)
+			memory.clear_memory()
+			time_step = 0
 			
-		# save every 500 episodes
-		if i_episode % 500 == 0:
-			torch.save(ppo.policy.state_dict(), './PPO_continuous_{}.pth'.format(id))
+			# logging
+			# if i_episode % log_interval == 0:
+			avg_length = int(avg_length/log_interval)
+			running_reward = running_reward/log_interval
 			
-		# logging
-		# if i_episode % log_interval == 0:
-		avg_length = int(avg_length/log_interval)
-		running_reward = int((running_reward/log_interval))
-		
-		print('Episode {} \t Avg length: {} \t Avg reward: {}'.format(i_episode, avg_length, running_reward))
-		running_reward = 0
-		avg_length = 0
+			print(f'Episode {i_episode} \t Avg length: {avg_length} \t Avg reward: {running_reward:.3f}')
+			writer.add_scalar('reward', running_reward, i_episode)
+			writer.add_scalar('avg_length', avg_length, i_episode)
+			running_reward = 0
+			avg_length = 0
+			torch.save(ppo.policy.state_dict(), "./weights/" + env_name + ".pt")
 			
 if __name__ == '__main__':
 	main()
