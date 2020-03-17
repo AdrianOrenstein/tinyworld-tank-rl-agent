@@ -101,20 +101,20 @@ class ActorCritic(nn.Module):
 		super(ActorCritic, self).__init__()
 		# action mean range -1 to 1
 		self.actor =  nn.Sequential(
-				nn.Linear(state_dim, 128),
-				nn.LeakyReLU(),
-				nn.Linear(128, 128),
-				nn.LeakyReLU(),
-				nn.Linear(128, action_dim),
-				nn.LeakyReLU(),
+				nn.Linear(state_dim, 512),
+				nn.ReLU(),
+				nn.Linear(512, 512),
+				nn.ReLU(),
+				nn.Linear(512, action_dim),
+				nn.Tanh(),
 				)
 		# critic
 		self.critic = nn.Sequential(
-				nn.Linear(state_dim, 128),
-				nn.LeakyReLU(),
-				nn.Linear(128, 128),
-				nn.LeakyReLU(),
-				nn.Linear(128, 1)
+				nn.Linear(state_dim, 512),
+				nn.ReLU(),
+				nn.Linear(512, 512),
+				nn.ReLU(),
+				nn.Linear(512, 1)
 				)
 		self.action_var = torch.full((action_dim,), action_std*action_std).to(device)
 		
@@ -227,16 +227,16 @@ def main():
 	############## Hyperparameters ##############
 	env_name = f"{math.floor(time.time())}__id_{id}"
 	writer = SummaryWriter("./logs/"+env_name)
-	tick_time = 0.1
+	tick_time = 0.2
 	log_interval = 10           # print avg reward in the interval
 	max_episodes = 10000        # max training episodes
 	max_timesteps = int(20 * (1/tick_time))        # max actions in one episode
 	
 	
 	update_timestep = max_timesteps * 2 # update policy every n timesteps
-	action_std = 0.50            # constant std for action distribution (Multivariate Normal)
-	K_epochs = 80               # update policy for K epochs
-	eps_clip = 0.5              # clip parameter for PPO
+	action_std = 0.5            # constant std for action distribution (Multivariate Normal)
+	K_epochs = 10               # update policy for K epochs
+	eps_clip = 0.2              # clip parameter for PPO
 	gamma = 0.99                # discount factor
 	
 	lr = 0.0003                 # parameters for Adam optimizerd
@@ -329,6 +329,7 @@ def main():
 				'deathCount':	0,
 			}
 			obs = global_obs
+
 			for t in range(max_timesteps):
 				time_step += 1
 				start_time = time.time()
@@ -347,32 +348,45 @@ def main():
 				delta_hits 	= obs['hitCount']	- global_obs['hitCount']
 				delta_death = obs['deathCount']	- global_obs['deathCount']
 
-				tmp_distances = (get_dist(x_cord, y_cord) for x_cord, y_cord in zip(state[-num_tanks:-num_tanks+1:2], state[-num_tanks+1:-num_tanks+1:2]))
-				reward_distance = sum((mm_clip(1/dist, 0, 1) if dist>0 else 0 for dist in tmp_distances))
+				# dist_start = (((num_tanks*2)+(action_dim)) * max(num_captures-1, 1))
+				dist_start = 0
+				dist_step = (num_tanks*2)+action_dim
+				dist_end = dist_step*num_captures
 
-				reward = sum([
+				tmp_distances = [get_dist(x_cord, y_cord) for x_cord, y_cord in zip(state[dist_start:dist_end:dist_step], state[dist_start+1:dist_end:dist_step])]
+				reward_velocity_to_closest = mm_clip(sum(np.diff(tmp_distances))/(tick_time*num_captures), 0, 5)
+				reward_smallest_distance = sum(mm_clip((-1/10)*dist+1, 0, 1) if dist>0 else 0 for dist in tmp_distances)
+				# print('looking at:',state[dist_start:dist_end:dist_step])
+				# print('dist_diff:', np.diff(tmp_distances))
+				# print('tmp_distances:', tmp_distances)
+				# print('reward_velocity_to_closest:', reward_velocity_to_closest)
+				# print('reward_smallest_distance:', [mm_clip((-1/10)*dist+1, 0, 1) if dist>0 else 0 for dist in tmp_distances])
+
+				reward = [
 					5	 * delta_kills,
-					1    * delta_hits,
-					0.01 * reward_distance, # was 1 instead of 0.1
+					2    * delta_hits,
+					0.01 * reward_smallest_distance, # was 1 instead of 0.1
+					0.01 * reward_velocity_to_closest
 					# -0.5 * delta_death
-				])
+				]
 				
 				global_obs['killCount'] += delta_kills
 				global_obs['hitCount'] += delta_hits
 				global_obs['deathCount'] += delta_death
 
-				action = [mm_clip(float(act), -1, 1) for act in action]
+				# action = [mm_clip(float(act), -1, 1) for act in action]
+				action = [float(act) for act in action]
 				# print(
 				# 	"action:", action, "\n",
 				# 	"state:", state, "\n", 
 				# 	"global_obs:", global_obs, "\n", 
 				# 	"done:", done, "\n",
-				# 	"reward:", reward, "\n",
+				# 	"reward:", reward, '\t', sum(reward), "\n",
 				# )
 
 				# Apply action to dict
 				action_dict = {
-					"name": f"swarm_v2_ep:{i_episode}={(i_episode/(max_episodes+1))*100:.1f}%_id:{id}",
+					"name": f"swarm_{(i_episode/(max_episodes+1))*100:.1f}%_id:{id}",
 					"colour": "#7017a1",
 					"moveForwardBack": 	action[0],
 					"moveRightLeft": 	0,
@@ -383,10 +397,10 @@ def main():
 				env.send_action_dict(action_dict)
 
 				# Saving reward and is_terminals:
-				memory.rewards.append(reward)
+				memory.rewards.append(sum(reward))
 				memory.is_terminals.append(done)
 
-				running_reward += reward
+				running_reward += sum(reward)
 
 				if done:
 					death_count += 1
@@ -397,6 +411,7 @@ def main():
 				# sleep 
 				end_time = time.time()
 				time_diff = end_time-start_time
+				# print(time_diff, tick_time, tick_time-time_diff)
 				time.sleep(0 if time_diff > tick_time else tick_time-time_diff)
 		
 			writer.add_scalar('rewards/ep_killCount', global_obs['killCount'], i_episode)
