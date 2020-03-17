@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch.distributions import MultivariateNormal
 import numpy as np
 
@@ -99,20 +100,20 @@ class ActorCritic(nn.Module):
 		super(ActorCritic, self).__init__()
 		# action mean range -1 to 1
 		self.actor =  nn.Sequential(
-				nn.Linear(state_dim, 64),
-				nn.Tanh(),
-				nn.Linear(64, 32),
-				nn.Tanh(),
-				nn.Linear(32, action_dim),
-				nn.Tanh()
+				nn.Linear(state_dim, 128),
+				nn.LeakyReLU(),
+				nn.Linear(128, 128),
+				nn.LeakyReLU(),
+				nn.Linear(128, action_dim),
+				nn.LeakyReLU(),
 				)
 		# critic
 		self.critic = nn.Sequential(
-				nn.Linear(state_dim, 64),
-				nn.Tanh(),
-				nn.Linear(64, 32),
-				nn.Tanh(),
-				nn.Linear(32, 1)
+				nn.Linear(state_dim, 128),
+				nn.LeakyReLU(),
+				nn.Linear(128, 128),
+				nn.LeakyReLU(),
+				nn.Linear(128, 1)
 				)
 		self.action_var = torch.full((action_dim,), action_std*action_std).to(device)
 		
@@ -193,9 +194,8 @@ class PPO:
 		old_states = old_states[:min_size]
 		old_actions = old_actions[:min_size]
 		old_logprobs = old_logprobs[:min_size]
-
-		# tmp_loss = 0
 		
+		tmp_loss = 0
 		# Optimize policy for K epochs:
 		for _ in range(self.K_epochs):
 			# Evaluating old actions and values :
@@ -212,39 +212,42 @@ class PPO:
 			
 			# take gradient step
 			self.optimizer.zero_grad()
-			#tmp_loss += loss
 			loss.mean().backward()
+			tmp_loss += loss.mean()
 			self.optimizer.step()
 			
 		# Copy new weights into old policy:
 		# print("updating policy, loss:", loss/self.K_epochs)
 		self.policy_old.load_state_dict(self.policy.state_dict())
+
+		return tmp_loss / self.K_epochs
 		
 def main():
 	############## Hyperparameters ##############
 	env_name = f"{math.floor(time.time())}__id_{id}"
 	writer = SummaryWriter("./logs/"+env_name)
-	tick_time = 0.1
-	solved_reward = 300         # stop training if avg_reward > solved_reward
-	log_interval = 20           # print avg reward in the interval
-	max_episodes = 1000000        # max training episodes
-	max_timesteps = int(15 * (1/tick_time))        # max actions in one episode
+	tick_time = 0.20
+	log_interval = 10           # print avg reward in the interval
+	max_episodes = 10000        # max training episodes
+	max_timesteps = int(20 * (1/tick_time))        # max actions in one episode
 	
 	
 	update_timestep = max_timesteps * 2 # update policy every n timesteps
-	action_std = 0.15            # constant std for action distribution (Multivariate Normal)
+	action_std = 0.50            # constant std for action distribution (Multivariate Normal)
 	K_epochs = 80               # update policy for K epochs
 	eps_clip = 0.2              # clip parameter for PPO
 	gamma = 0.99                # discount factor
 	
-	lr = 0.001                 # parameters for Adam optimizer
+	lr = 0.0003                 # parameters for Adam optimizer
 	betas = (0.9, 0.999)
 	
 	random_seed = None
 	#############################################
 	
 	# creating environment
-	state_dim = 15*2 # 15 tanks with (x,y)
+	num_captures = 3
+	num_tanks = 15
+	state_dim = (num_tanks*2)*(num_captures) # 15 tanks with (x,y) * 3 captures
 	action_dim = 4
 
 	print(
@@ -275,16 +278,20 @@ def main():
 	def parse_distances(arr: tuple):
 		return get_dist(arr[0], arr[1])
 
-	def parse_observations(observations: dict, kill_count: int, death_count: int) -> (list, int, bool):
+	def parse_observations(observations: dict, hit_count: int, death_count: int) -> (list, int, bool):
 		""" 
 		parse observation dict into desirable data structures
 		"""
+
+		# print(observations)
+
 		if not observations:
 			# print("no observations.. there is no one around me?")
 			observations = {
-				'deathCount': kill_count, 
-				'killCount': death_count, 
-				'radarScan': []
+				'deathCount': hit_count, 
+				'hitCount': hit_count,
+				'radarScan': [],
+
 			}
 		
 
@@ -294,7 +301,7 @@ def main():
 		# print([(parse_distances(dis), 1/parse_distances(dis)) for dis in tank_locations])
 
 		# List of the closest tank coordinates
-		ret_state = np.zeros((state_dim//2,2))
+		ret_state = np.zeros((num_tanks,2))
 
 		for i, loc in enumerate(tank_locations):
 			ret_state[i] = loc
@@ -302,7 +309,7 @@ def main():
 		# print(ret_state)
 		# print("I can see:", len(tank_locations), "tanks")
 		# count of the kills
-		ret_reward = observations['killCount']
+		ret_reward = observations['hitCount']
 		
 		# have we died?
 		ret_done = False if observations['deathCount'] == 0 else True
@@ -313,32 +320,44 @@ def main():
 	for i_episode in tqdm(range(1, max_episodes+1)):
 		batch_time_begin = time.time()
 		try:
-			env = RlWorldClient("129.127.147.237",1337)
-			state = env.read_observation_dict()
+			env = RlWorldClient("129.127.147.237", 1337)
 
-			kill_count = 0
+			hit_count = 0
 			death_count = 0
 			for t in range(max_timesteps):
 				time_step += 1
 				start_time = time.time()
 
 				# Run old policy
-				state, current_kills, done = parse_observations(env.read_observation_dict(), kill_count, death_count)
-				action = ppo.select_action(state.reshape(1, -1), memory).tolist()
+				state = []
 
+				for _ in range(1, num_captures):
+					tmp_state, _, _ = parse_observations(env.read_observation_dict(), hit_count, death_count)
+					state.extend(tmp_state)
+					time.sleep(0.1)
+
+				state_final, current_kills, done = parse_observations(env.read_observation_dict(), hit_count, death_count)
+				state.extend(state_final)
+
+				state = np.array(state)
+
+				action = ppo.select_action(state.reshape(1, -1), memory).tolist()
 
 				# calculate rewards
 				mm_clip = lambda x, l, u: max(l, min(u, x))
-				reward_kills = current_kills - kill_count
-				tmp_distances = (parse_distances(tank_loc) for tank_loc in state)
+				reward_hits = current_kills - hit_count
+				# print([[i, tup] for i, tup in enumerate(state)])
+				# print(state[-num_tanks:-num_tanks+1])
+				# print(len(state), print(-num_tanks*2*2))
+				tmp_distances = (parse_distances(tank_loc) for tank_loc in state[-num_tanks:-num_tanks+1])
 				reward_distance = sum((mm_clip(1/dist, 0, 1) if dist>0 else 0 for dist in tmp_distances))
 
 				reward = sum([
-					10    * reward_kills,
-					1 * reward_distance
+					1    * reward_hits,
+					0.01 * reward_distance # was 1 instead of 0.1
 				])
 				# print("reward:", reward)
-				kill_count += reward_kills
+				hit_count += reward_hits
 				action = [mm_clip(act, -1, 1) for act in action]
 				
 				# print(
@@ -347,12 +366,12 @@ def main():
 				# 	"current_kills:", current_kills, "\n", 
 				# 	"done:", done, "\n",
 				# 	"reward:", reward, "\n",
-				# 	"kill_count:", kill_count, "\n"
+				# 	"hit_count:", hit_count, "\n"
 				# 	)
 
 				# Apply action to dict
 				action_dict = {
-					"name": f"swarm_ep:{i_episode}_id:{id}",
+					"name": f"swarm_v2_ep:{i_episode}={(i_episode/(max_episodes+1))*100:.1f}%_id:{id}",
 					"colour": "#7017a1",
 					"moveForwardBack": 	action[0],
 					"moveRightLeft": 	action[1],
@@ -381,26 +400,30 @@ def main():
 			print("caught exception:", e)
 			time.sleep(1)
 
-		if i_episode % 5 == 0 and len(memory.states) > 0:
+		writer.add_scalar('rewards/ep_hit_count', hit_count, i_episode)
+		writer.add_scalar('rewards/ep_death_count', death_count, i_episode)
+
+		if i_episode % log_interval == 0 and len(memory.states) > 0:
 			# load memory from other saved batches
 			batch_time_end = time.time()
 			batch_time_diff = batch_time_end - batch_time_begin
 			# print("batch_time_diff", batch_time_diff)
 			memory.save_memory()
-			found_count = memory.find_experiences(seconds_ago=batch_time_diff*1.10)
-			ppo.update(memory)
+			found_count = memory.find_experiences(seconds_ago=batch_time_diff*1.95)
+			loss = ppo.update(memory)
 			memory.clear_memory()
 			time_step = 0
 			
 			# logging
 			# if i_episode % log_interval == 0:
-			avg_length = int(avg_length/log_interval)
+			avg_length = avg_length//log_interval
 			running_reward = running_reward/log_interval
 			
 			print(f'Episode {i_episode} \t Avg length: {avg_length} \t Avg reward: {running_reward:.3f}')
-			writer.add_scalar('reward', running_reward, i_episode)
-			writer.add_scalar('avg_length', avg_length, i_episode)
-			writer.add_scalar('found_exp', found_count, i_episode)
+			writer.add_scalar('rewards/reward', running_reward, i_episode)
+			writer.add_scalar('rewards/avg_length', avg_length, i_episode)
+			writer.add_scalar('debug/found_exp', found_count, i_episode)
+			writer.add_scalar('debug/loss', -float(loss.sum().detach()), i_episode)
 			running_reward = 0
 			avg_length = 0
 			torch.save(ppo.policy.state_dict(), "./weights/" + env_name + ".pt")
