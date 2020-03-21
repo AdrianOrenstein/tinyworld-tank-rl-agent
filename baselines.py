@@ -101,20 +101,20 @@ class ActorCritic(nn.Module):
 		super(ActorCritic, self).__init__()
 		# action mean range -1 to 1
 		self.actor =  nn.Sequential(
-				nn.Linear(state_dim, 512),
+				nn.Linear(state_dim, 128),
 				nn.ReLU(),
-				nn.Linear(512, 512),
+				nn.Linear(128, 128),
 				nn.ReLU(),
-				nn.Linear(512, action_dim),
+				nn.Linear(128, action_dim),
 				nn.Tanh(),
 				)
 		# critic
 		self.critic = nn.Sequential(
-				nn.Linear(state_dim, 512),
+				nn.Linear(state_dim, 128),
 				nn.ReLU(),
-				nn.Linear(512, 512),
+				nn.Linear(128, 128),
 				nn.ReLU(),
-				nn.Linear(512, 1)
+				nn.Linear(128, 1)
 				)
 		self.action_var = torch.full((action_dim,), action_std*action_std).to(device)
 		
@@ -228,9 +228,9 @@ def main():
 	env_name = f"{math.floor(time.time())}__id_{id}"
 	writer = SummaryWriter("./logs/"+env_name)
 	tick_time = 0.2
-	log_interval = 10           # print avg reward in the interval
-	max_episodes = 10000        # max training episodes
-	max_timesteps = int(20 * (1/tick_time))        # max actions in one episode
+	log_interval = 2           # print avg reward in the interval
+	max_episodes = 50000        # max training episodes
+	max_timesteps = int(15 * (1/tick_time))        # max actions in one episode
 	
 	
 	update_timestep = max_timesteps * 2 # update policy every n timesteps
@@ -248,7 +248,7 @@ def main():
 	# creating environment
 	num_captures = 3
 	num_tanks = 15
-	action_dim = 2
+	action_dim = 3
 	state_dim = (num_tanks*2)*(num_captures)+(action_dim*num_captures) # 15 tanks with (x,y) * 3 captures
 	
 
@@ -318,7 +318,8 @@ def main():
 	for i_episode in tqdm(range(1, max_episodes+1)):
 		batch_time_begin = time.time()
 		try:
-			env = RlWorldClient("129.127.147.237", 1337)
+			# env = RlWorldClient("129.127.147.237", 1337)
+			env = RlWorldClient("10.90.159.11", 1337)
 			state = RingBuffer(capacity=state_dim, dtype=np.float32)
 			# instantiate buffer with all zeros
 			state.extend(np.zeros((state_dim)))
@@ -329,7 +330,6 @@ def main():
 				'deathCount':	0,
 			}
 			obs = global_obs
-
 			for t in range(max_timesteps):
 				time_step += 1
 				start_time = time.time()
@@ -353,22 +353,22 @@ def main():
 				dist_step = (num_tanks*2)+action_dim
 				dist_end = dist_step*num_captures
 
-				tmp_distances = [get_dist(x_cord, y_cord) for x_cord, y_cord in zip(state[dist_start:dist_end:dist_step], state[dist_start+1:dist_end:dist_step])]
-				reward_velocity_to_closest = mm_clip(sum(np.diff(tmp_distances))/(tick_time*num_captures), 0, 5)
-				reward_smallest_distance = sum(mm_clip((-1/10)*dist+1, 0, 1) if dist>0 else 0 for dist in tmp_distances)
+				# tmp_distances = [get_dist(x_cord, y_cord) for x_cord, y_cord in zip(state[dist_start:dist_end:dist_step], state[dist_start+1:dist_end:dist_step])]
+				# reward_velocity_to_closest = mm_clip(sum(np.diff(tmp_distances))/(tick_time*num_captures), 0, 5)
+				# reward_smallest_distance = sum(mm_clip((-1/10)*dist+1, 0, 1) if dist>0 else 0 for dist in tmp_distances)
 				# print('looking at:',state[dist_start:dist_end:dist_step])
 				# print('dist_diff:', np.diff(tmp_distances))
 				# print('tmp_distances:', tmp_distances)
 				# print('reward_velocity_to_closest:', reward_velocity_to_closest)
 				# print('reward_smallest_distance:', [mm_clip((-1/10)*dist+1, 0, 1) if dist>0 else 0 for dist in tmp_distances])
 
+				time_discount = mm_clip((-1/(max_timesteps*1.1)) * t + 1, 0, 1)
+
 				reward = [
-					5	 * delta_kills,
-					2    * delta_hits,
-					0.01 * reward_smallest_distance, # was 1 instead of 0.1
-					0.01 * reward_velocity_to_closest
-					# -0.5 * delta_death
+					5	 	* delta_kills * time_discount,
+					1    	* delta_hits * time_discount,
 				]
+				
 				
 				global_obs['killCount'] += delta_kills
 				global_obs['hitCount'] += delta_hits
@@ -389,9 +389,9 @@ def main():
 					"name": f"swarm_{(i_episode/(max_episodes+1))*100:.1f}%_id:{id}",
 					"colour": "#7017a1",
 					"moveForwardBack": 	action[0],
-					"moveRightLeft": 	0,
-					"turnRightLeft": 	action[1],
-					"fire": True, # action[3] > 0,
+					"moveRightLeft": 	action[1],
+					"turnRightLeft": 	action[2],
+					"fire": True,
 				}
 
 				env.send_action_dict(action_dict)
@@ -411,7 +411,6 @@ def main():
 				# sleep 
 				end_time = time.time()
 				time_diff = end_time-start_time
-				# print(time_diff, tick_time, tick_time-time_diff)
 				time.sleep(0 if time_diff > tick_time else tick_time-time_diff)
 		
 			writer.add_scalar('rewards/ep_killCount', global_obs['killCount'], i_episode)
