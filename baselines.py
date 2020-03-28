@@ -100,21 +100,26 @@ class ActorCritic(nn.Module):
 	def __init__(self, state_dim, action_dim, action_std):
 		super(ActorCritic, self).__init__()
 		# action mean range -1 to 1
+		self.hidden_size = 64
 		self.actor =  nn.Sequential(
-				nn.Linear(state_dim, 128),
+				nn.Linear(state_dim, self.hidden_size),
 				nn.ReLU(),
-				nn.Linear(128, 128),
+				nn.Linear(self.hidden_size, self.hidden_size),
 				nn.ReLU(),
-				nn.Linear(128, action_dim),
+				nn.Linear(self.hidden_size, self.hidden_size),
+				nn.ReLU(),
+				nn.Linear(self.hidden_size, self.hidden_size),
+				nn.ReLU(),
+				nn.Linear(self.hidden_size, action_dim),
 				nn.Tanh(),
 				)
 		# critic
 		self.critic = nn.Sequential(
-				nn.Linear(state_dim, 128),
+				nn.Linear(state_dim, self.hidden_size),
 				nn.ReLU(),
-				nn.Linear(128, 128),
+				nn.Linear(self.hidden_size, self.hidden_size),
 				nn.ReLU(),
-				nn.Linear(128, 1)
+				nn.Linear(self.hidden_size, 1)
 				)
 		self.action_var = torch.full((action_dim,), action_std*action_std).to(device)
 		
@@ -227,9 +232,9 @@ def main():
 	############## Hyperparameters ##############
 	env_name = f"{math.floor(time.time())}__id_{id}"
 	writer = SummaryWriter("./logs/"+env_name)
-	tick_time = 0.2
+	tick_time = 0.20
 	log_interval = 2           # print avg reward in the interval
-	max_episodes = 50000        # max training episodes
+	max_episodes = 10000        # max training episodes
 	max_timesteps = int(15 * (1/tick_time))        # max actions in one episode
 	
 	
